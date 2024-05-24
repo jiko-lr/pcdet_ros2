@@ -1,3 +1,5 @@
+#!/home/iat/anaconda3/envs/ros2/bin/python
+
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -12,7 +14,7 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     package_name = 'pcdet_ros2'
     package_dir = get_package_share_directory(package_name)
-    config_file = 'pcdet_pvrcnn.param.yaml'
+    config_file = 'pcdet_centerpoint_voxel.param.yaml'
 
     namespace = LaunchConfiguration('namespace')
     params_file = LaunchConfiguration('params_file')
@@ -38,8 +40,9 @@ def generate_launch_description():
 
     declare_input_topic_cmd = DeclareLaunchArgument(
         'input_topic',
-        default_value='/kitti/point_cloud',
-        description='Input Point Cloud'
+        default_value='/rob_main/velodyne/velodyne_points', #'/kitti/velo/pointcloud', #'/kitti/point_cloud',
+        #default_value='/os_cloud_node/points',
+        #description='Input Point Cloud'
     )
 
     declare_output_topic_cmd = DeclareLaunchArgument(

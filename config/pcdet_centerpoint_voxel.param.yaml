@@ -1,0 +1,16 @@
+pcdet:
+  ros__parameters:
+    config_file: "cfgs/custom_models/centerpoint_voxel.yaml"
+    model_file: "checkpoints/centerpoint_voxel_epoch_80.pth"
+    allow_memory_fractioning: False
+    allow_score_thresholding: True
+    num_features: 3
+    device_id: 0
+    device_memory_fraction: 6.0
+    threshold_array: [0.45, 0.45, 0.45] # [Car, Pedestrian, Bicycle]
+   ###for simulation data in gazebo:
+    input_topic: '/rob_main/velodyne/velodyne_points' # frame_id: rob_main/velodyne
+    ###for real data from oustor sensor:
+    #input_topic: '/os_cloud_node/points' # frame_id: os_sensor
+    
+    

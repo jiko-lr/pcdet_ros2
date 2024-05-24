@@ -18,6 +18,8 @@ The package subscribes to the pointcloud message and publishes instances of obje
 # - Created by Shrijal Pradhan on 16/03/2023.
 #
 # Copyright (c) 2023 Shrijal Pradhan.  All rights reserved.
+import sys
+sys.path.append(f'/home/iat/anaconda3/envs/ros2/lib/python3.10/site-packages/') 
 
 # Imports
 import rclpy 
@@ -26,6 +28,7 @@ import ros2_numpy
 from vision_msgs.msg import Detection3DArray
 from vision_msgs.msg import Detection3D
 from vision_msgs.msg import ObjectHypothesisWithPose
+from visualization_msgs.msg import MarkerArray, Marker
 from sensor_msgs.msg import PointCloud2
 
 import argparse
@@ -40,6 +43,7 @@ from pcdet.datasets import DatasetTemplate
 from pcdet.models import build_network, load_data_to_gpu
 from pcdet.utils import common_utils
 
+from .pc_roi import create_bbox_marker
 
 class PCDetROS(Node):
     """! The PCDetROS class.
@@ -62,49 +66,121 @@ class PCDetROS(Node):
         self.__initObjects__()
     
     def __cloudCB__(self, cloud_msg):
-        out_msg = Detection3DArray()
+        out_msg = MarkerArray()
         cloud_array = ros2_numpy.point_cloud2.pointcloud2_to_array(cloud_msg)
         np_points = self.__convertCloudFormat__(cloud_array)
 
+        #check if the roi is empty
+        x_min, x_max = self.pcrange[0], self.pcrange[3]
+        y_min, y_max = self.pcrange[1], self.pcrange[4]
+        z_min, z_max = self.pcrange[2], self.pcrange[5]
+                    
+        region_points =np_points[(np_points[:, 0] >= x_min) & (np_points[:, 0] <= x_max) &
+                            (np_points[:, 1] >= y_min) & (np_points[:, 1] <= y_max) &
+                            (np_points[:, 2] >= z_min) & (np_points[:, 2] <= z_max)]
+        if region_points.size == 0:
+            print("roi have no points, skip")
+            return
+
+        import time
+        start_time = time.time()
         scores, dt_box_lidar, types = self.__runTorch__(np_points)
+        end_time = time.time()
+        procesing_time = end_time - start_time
+        print("Time taken: ", procesing_time, "seconds")
+
+        print_str = f"Frame: {cloud_msg.header.frame_id}. Time: {cloud_msg.header.stamp}. Prediction results: \n"
+        for i in range(len(types)):
+            print_str += f"Type: {types[i]:d} Prob: {scores[i]:.2f}\n"
+        print(print_str)
+
+        current_marker_ids = set()
 
         if scores.size != 0:
             for i in range(scores.size):
                 allow_publishing = self.__getPubState__(int(types[i]), scores[i])
-                if(allow_publishing):
-                    det = Detection3D()
-                    det.header.frame_id = cloud_msg.header.frame_id
-                    det.header.stamp = self.get_clock().now().to_msg()
+                if allow_publishing:
+                    marker = Marker()
+                    marker.header.frame_id = cloud_msg.header.frame_id
+                    marker.header.stamp = self.get_clock().now().to_msg()
+                    marker.type = Marker.CUBE
+                    marker.action = Marker.ADD
+                    marker.id = i
+                    marker.pose.position.x = float(dt_box_lidar[i][0])
+                    marker.pose.position.y = float(dt_box_lidar[i][1])
+                    marker.pose.position.z = float(dt_box_lidar[i][2])
+                    # Use Quaternion message for orientation
                     quat = self.__yawToQuaternion__(float(dt_box_lidar[i][6]))
-                    det.bbox.center.orientation.x = quat[1]
-                    det.bbox.center.orientation.y = quat[2]
-                    det.bbox.center.orientation.z = quat[3]
-                    det.bbox.center.orientation.w = quat[0]
-                    det.bbox.center.position.x = float(dt_box_lidar[i][0])
-                    det.bbox.center.position.y = float(dt_box_lidar[i][1])
-                    det.bbox.center.position.z = float(dt_box_lidar[i][2]) 
-                    det.bbox.size.x = float(dt_box_lidar[i][3])
-                    det.bbox.size.y = float(dt_box_lidar[i][4])
-                    det.bbox.size.z = float(dt_box_lidar[i][5])
-                    hypothesis = ObjectHypothesisWithPose()
-                    hypothesis.hypothesis.class_id = str(types[i])
-                    hypothesis.hypothesis.score = float(scores[i])
-                    hypothesis.pose.pose = det.bbox.center
-                    det.id = str(types[i])
-                    det.results.append(hypothesis)
-                    out_msg.detections.append(det)
+                    marker.pose.orientation.x = quat[1]
+                    marker.pose.orientation.y = quat[2]
+                    marker.pose.orientation.z = quat[3]
+                    marker.pose.orientation.w = quat[0]
+                    marker.scale.x = float(dt_box_lidar[i][3])
+                    marker.scale.y = float(dt_box_lidar[i][4])
+                    marker.scale.z = float(dt_box_lidar[i][5])
+                    marker.color.a = 1.0
+                    marker.color.r = 1.0  # Set color as needed
+                    marker.color.g = 0.0
+                    marker.color.b = 0.0
+
+                    out_msg.markers.append(marker)
+                    current_marker_ids.add(marker.id)
+                    # Delete markers that are no longer valid
+        for marker_id in self.active_marker_ids - current_marker_ids:
+            marker = Marker()
+            marker.header.frame_id = cloud_msg.header.frame_id
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.type = Marker.CUBE
+            marker.action = Marker.DELETE
+            marker.id = marker_id
+            out_msg.markers.append(marker)
         
-        out_msg.header.frame_id = cloud_msg.header.frame_id
-        out_msg.header.stamp = self.get_clock().now().to_msg()
+        # Update the set of active marker IDs
+        self.active_marker_ids = current_marker_ids
 
-        if len(out_msg.detections) != 0:
+        if len(out_msg.markers) != 0:
             self.__pub_det__.publish(out_msg)
-            out_msg.detections = []
         else:
-            out_msg.detections = []
-            self.__pub_det__.publish(out_msg)
+            # If no detections, publish an empty MarkerArray
+            self.__pub_det__.publish(MarkerArray())
 
-    def __convertCloudFormat__(self, cloud_array, remove_nans=True, dtype=np.float):
+        #publish pc roi
+        pcRangeX = [self.pcrange[0], self.pcrange[3]]
+        pcRangeY = [self.pcrange[1], self.pcrange[4]]
+        pcRangeZ = [self.pcrange[2], self.pcrange[5]]
+        PCRange = [pcRangeX, pcRangeY, pcRangeZ]
+
+        length = float(PCRange[0][1] - PCRange[0][0])
+        width  = float(PCRange[1][1] - PCRange[1][0])
+        height = float(PCRange[2][1] - PCRange[2][0])
+        center_x = float(PCRange[0][1] + PCRange[0][0]) / 2
+        center_y  = float(PCRange[1][1] + PCRange[1][0]) / 2
+        center_z = float(PCRange[2][1] + PCRange[2][0]) / 2
+
+        # Marker for Box
+        markerBox = Marker()
+        markerBox.header.frame_id = cloud_msg.header.frame_id
+        markerBox.header.stamp = self.get_clock().now().to_msg()
+        markerBox.type = Marker.CUBE
+        markerBox.action = Marker.ADD
+        markerBox.pose.position.x = center_x
+        markerBox.pose.position.y = center_y
+        markerBox.pose.position.z = center_z
+        markerBox.pose.orientation.x = 0.0
+        markerBox.pose.orientation.y = 0.0
+        markerBox.pose.orientation.z = 0.0
+        markerBox.pose.orientation.w = 1.0
+        markerBox.scale.x = length
+        markerBox.scale.y = width
+        markerBox.scale.z = height
+        markerBox.color.a = 0.1
+        markerBox.color.r = 0.0
+        markerBox.color.g = 1.0
+        markerBox.color.b = 0.0
+        print(markerBox.header.stamp)
+        self.publisherRangeBox.publish(markerBox)
+
+    def __convertCloudFormat__(self, cloud_array, remove_nans=True, dtype=float):
         '''
         '''
         if remove_nans:
@@ -177,7 +253,8 @@ class PCDetROS(Node):
         self.__net__ = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=self.__online_detection__)
         self.__net__.load_params_from_file(filename=self.__model_file__, logger=self.__logger__, to_cpu=True)
         self.__net__ = self.__net__.to(self.__device__).eval()
-      
+        self.pcrange = cfg.DATA_CONFIG.POINT_CLOUD_RANGE
+    
     def __initParams__(self):
         self.declare_parameter("config_file", rclpy.Parameter.Type.STRING)
         self.declare_parameter("package_folder_path", rclpy.Parameter.Type.STRING)
@@ -210,9 +287,13 @@ class PCDetROS(Node):
                                                   "input", 
                                                   self.__cloudCB__, 
                                                   10)
-        self.__pub_det__ = self.create_publisher(Detection3DArray,
+        self.__pub_det__ = self.create_publisher(MarkerArray,
                                                  "output",
-                                                 10)
+                                                 1)
+        self.publisherRangeBox = self.create_publisher(Marker,
+                                                       "pc_range",
+                                                       10)
+        self.active_marker_ids = set()
 
 def main(args=None):
     rclpy.init(args=args)

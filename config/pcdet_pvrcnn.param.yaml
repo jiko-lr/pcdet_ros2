@@ -2,9 +2,12 @@ pcdet:
   ros__parameters:
     config_file: "cfgs/kitti_models/pv_rcnn.yaml"
     model_file: "checkpoints/pv_rcnn_8369.pth"
+    #config_file: "cfgs/kitti_models/centerpoint.yaml"
+    #model_file: "checkpoints/checkpoint_epoch_200.pth"
     allow_memory_fractioning: False
     allow_score_thresholding: True
     num_features: 4
     device_id: 0
     device_memory_fraction: 6.0
     threshold_array: [0.7, 0.35, 0.5] # [Car, Pedestrian, Bicycle]
+    input_topic: '/kitti/velo/pointcloud'
